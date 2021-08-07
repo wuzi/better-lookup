@@ -22,6 +22,7 @@ const resolve6 = promisify(dns.resolve6);
 const hostsThrottle = useThrottle("dnsLookup:loadHostsConfig", 10_000);
 const _createConnection = Symbol("_createConnection");
 const Cache: Record<string, AddressInfoDetail[]> = {};
+const DEFAULT_SERVER_NAME = "global";
 
 var HostsConfig: Record<string, AddressInfoDetail[]>;
 var timer = setInterval(async () => { // reload hosts file for every 10 seconds.
@@ -79,20 +80,20 @@ export function lookup(
 ): void;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; }
+    options: { family?: 0 | 4 | 6; server?: string; }
 ): Promise<string>;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; },
+    options: { family?: 0 | 4 | 6; server?: string; },
     callback: LookupCallback<string>
 ): void;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; all: true; }
+    options: { family?: 0 | 4 | 6; all: true; server?: string; }
 ): Promise<AddressInfo[]>;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; all: true; },
+    options: { family?: 0 | 4 | 6; all: true; server?: string; },
     callback: LookupCallback<AddressInfo[]>
 ): void;
 export function lookup(
@@ -102,10 +103,12 @@ export function lookup(
 ): any {
     let family: 0 | 4 | 6 = 0;
     let all = false;
+    let server = DEFAULT_SERVER_NAME;
 
     if (typeof options === "object") {
         family = options.family || 0;
         all = options.all || false;
+        server = options.server || server;
     } else if (typeof options === "number") {
         family = options as 0 | 4 | 6;
     } else if (typeof options === "function") {
@@ -134,9 +137,10 @@ export function lookup(
 
     // If local cache contains records of the target hostname, try to retrieve
     // them and prevent network query.
-    if (!isEmpty(Cache[hostname])) {
+    const cacheKey = `${server}:${hostname}`;
+    if (!isEmpty(Cache[cacheKey])) {
         let now = timestamp();
-        let addresses = Cache[hostname].filter(a => a.expireAt > now);
+        let addresses = Cache[cacheKey].filter(a => a.expireAt > now);
 
         if (family) {
             addresses = addresses.filter(a => a.family === family);
@@ -177,13 +181,13 @@ export function lookup(
                         result.push(...addresses);
 
                         // Cache the records.
-                        if (Cache[hostname]) {
-                            Cache[hostname] = Cache[hostname].filter(
+                        if (Cache[cacheKey]) {
+                            Cache[cacheKey] = Cache[cacheKey].filter(
                                 a => a.family !== 4 // remove history
                             );
-                            Cache[hostname].unshift(...addresses);
+                            Cache[cacheKey].unshift(...addresses);
                         } else {
-                            Cache[hostname] = addresses;
+                            Cache[cacheKey] = addresses;
                         }
                     } catch (e) {
                         err4 = e;
@@ -203,13 +207,13 @@ export function lookup(
                         result.push(...addresses);
 
                         // Cache the records.
-                        if (Cache[hostname]) {
-                            Cache[hostname] = Cache[hostname].filter(
+                        if (Cache[cacheKey]) {
+                            Cache[cacheKey] = Cache[cacheKey].filter(
                                 a => a.family !== 6 // remove history
                             );
-                            Cache[hostname].push(...addresses);
+                            Cache[cacheKey].push(...addresses);
                         } else {
-                            Cache[hostname] = addresses;
+                            Cache[cacheKey] = addresses;
                         }
                     } catch (e) {
                         if (e.code === "ENODATA" &&
@@ -235,13 +239,13 @@ export function lookup(
                                     expireAt: Math.max(record.ttl + now, 10)
                                 }));
 
-                                if (Cache[hostname]) {
-                                    Cache[hostname] = Cache[hostname].filter(
+                                if (Cache[cacheKey]) {
+                                    Cache[cacheKey] = Cache[cacheKey].filter(
                                         a => a.family !== 4 // remove history
                                     );
-                                    Cache[hostname].unshift(...addresses);
+                                    Cache[cacheKey].unshift(...addresses);
                                 } else {
-                                    Cache[hostname] = addresses;
+                                    Cache[cacheKey] = addresses;
                                 }
                             } catch (_e) {
                                 err6 = e;
@@ -331,7 +335,13 @@ export function install<T extends HttpAgent | HttpsAgent>(
     agent: T & {
         createConnection?: (options: any, callback: Function) => Socket;
     },
-    family: 0 | 4 | 6 = 0
+    {
+        family,
+        server,
+    }: {
+        family?: 0 | 4 | 6;
+        server?: string;
+    } = {}
 ): T {
     let tryAttach = (options: Record<string, any>) => {
         if (!options["lookup"]) {
@@ -340,7 +350,10 @@ export function install<T extends HttpAgent | HttpsAgent>(
                 options: any,
                 cb: LookupCallback<string>
             ) {
-                return lookup(hostname, options["family"] ?? family, cb);
+                return lookup(hostname, {
+                    family: options["family"] ?? family ?? 0,
+                    server: options["server"] ?? server ?? DEFAULT_SERVER_NAME,
+                }, cb);
             };
         }
     };
