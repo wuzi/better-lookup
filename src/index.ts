@@ -1,4 +1,4 @@
-import * as dns from "dns";
+import { Resolver } from "dns";
 import * as fs from "fs";
 import { isIP, Socket } from "net";
 import { Agent as HttpAgent } from "http";
@@ -17,12 +17,10 @@ type LookupCallback<T extends string | AddressInfo[]> = (
 ) => void;
 
 const readFile = promisify(fs.readFile);
-const resolve4 = promisify(dns.resolve4);
-const resolve6 = promisify(dns.resolve6);
 const hostsThrottle = useThrottle("dnsLookup:loadHostsConfig", 10_000);
 const _createConnection = Symbol("_createConnection");
 const Cache: Record<string, AddressInfoDetail[]> = {};
-const DEFAULT_SERVER_NAME = "global";
+const DEFAULT_SERVERS = [];
 
 var HostsConfig: Record<string, AddressInfoDetail[]>;
 var timer = setInterval(async () => { // reload hosts file for every 10 seconds.
@@ -80,20 +78,20 @@ export function lookup(
 ): void;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; server?: string; }
+    options: { family?: 0 | 4 | 6; servers?: string[]; }
 ): Promise<string>;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; server?: string; },
+    options: { family?: 0 | 4 | 6; servers?: string[]; },
     callback: LookupCallback<string>
 ): void;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; all: true; server?: string; }
+    options: { family?: 0 | 4 | 6; all: true; servers?: string[]; }
 ): Promise<AddressInfo[]>;
 export function lookup(
     hostname: string,
-    options: { family?: 0 | 4 | 6; all: true; server?: string; },
+    options: { family?: 0 | 4 | 6; all: true; servers?: string[]; },
     callback: LookupCallback<AddressInfo[]>
 ): void;
 export function lookup(
@@ -103,12 +101,12 @@ export function lookup(
 ): any {
     let family: 0 | 4 | 6 = 0;
     let all = false;
-    let server = DEFAULT_SERVER_NAME;
+    let servers = [];
 
     if (typeof options === "object") {
         family = options.family || 0;
         all = options.all || false;
-        server = options.server || server;
+        servers = options.servers || servers;
     } else if (typeof options === "number") {
         family = options as 0 | 4 | 6;
     } else if (typeof options === "function") {
@@ -137,7 +135,7 @@ export function lookup(
 
     // If local cache contains records of the target hostname, try to retrieve
     // them and prevent network query.
-    const cacheKey = `${server}:${hostname}`;
+    const cacheKey = `${servers.join()}:${hostname}`;
     if (!isEmpty(Cache[cacheKey])) {
         let now = timestamp();
         let addresses = Cache[cacheKey].filter(a => a.expireAt > now);
@@ -168,6 +166,12 @@ export function lookup(
             if (isEmpty(result)) {
                 if (!family || family === 4) {
                     try {
+                        const resolver = new Resolver();
+                        if (servers.length > 0) {
+                            resolver.setServers(servers);
+                        }
+                        const resolve4 = promisify(resolver.resolve4);
+
                         let records = await resolve4(hostname, { ttl: true });
                         let now = timestamp();
                         let addresses = records.map(record => ({
@@ -196,6 +200,12 @@ export function lookup(
 
                 if (!family || family === 6) {
                     try {
+                        const resolver = new Resolver();
+                        if (servers.length > 0) {
+                            resolver.setServers(servers);
+                        }
+                        const resolve6 = promisify(resolver.resolve6);
+
                         let records = await resolve6(hostname, { ttl: true });
                         let now = timestamp();
                         let addresses = records.map(record => ({
@@ -221,6 +231,12 @@ export function lookup(
                             family === 6
                         ) {
                             try {
+                                const resolver = new Resolver();
+                                if (servers.length > 0) {
+                                    resolver.setServers(servers);
+                                }
+                                const resolve4 = promisify(resolver.resolve4);
+
                                 let records = await resolve4(hostname, {
                                     ttl: true
                                 });
@@ -337,10 +353,10 @@ export function install<T extends HttpAgent | HttpsAgent>(
     },
     {
         family,
-        server,
+        servers,
     }: {
         family?: 0 | 4 | 6;
-        server?: string;
+        servers?: string[];
     } = {}
 ): T {
     let tryAttach = (options: Record<string, any>) => {
@@ -352,7 +368,7 @@ export function install<T extends HttpAgent | HttpsAgent>(
             ) {
                 return lookup(hostname, {
                     family: options["family"] ?? family ?? 0,
-                    server: options["server"] ?? server ?? DEFAULT_SERVER_NAME,
+                    servers: options["servers"] ?? servers ?? DEFAULT_SERVERS,
                 }, cb);
             };
         }
