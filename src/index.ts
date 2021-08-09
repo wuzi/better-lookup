@@ -101,7 +101,7 @@ export function lookup(
 ): any {
     let family: 0 | 4 | 6 = 0;
     let all = false;
-    let servers = [];
+    let servers = DEFAULT_SERVERS;
 
     if (typeof options === "object") {
         family = options.family || 0;
